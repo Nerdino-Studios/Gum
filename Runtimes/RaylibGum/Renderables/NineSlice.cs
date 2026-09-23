@@ -75,6 +75,20 @@ public class NineSlice : RenderableBase, IAnimatable, ITextureCoordinate, IClone
             Red = frame.Red ?? 255;
             Green = frame.Green ?? 255;
             Blue = frame.Blue ?? 255;
+            ColorOperation = ColorOperation.Modulate;
+        }
+        else if (frame.ColorOperation == AnimationFrameColorOperation.Add)
+        {
+            // Black (0) is Add's identity, so an unset channel contributes nothing - unlike
+            // Multiply's 255 identity above.
+            Red = frame.Red ?? 0;
+            Green = frame.Green ?? 0;
+            Blue = frame.Blue ?? 0;
+            ColorOperation = ColorOperation.Add;
+        }
+        else if (ColorOperation == ColorOperation.Add)
+        {
+            ColorOperation = ColorOperation.Modulate;
         }
     }
 
@@ -220,6 +234,12 @@ public class NineSlice : RenderableBase, IAnimatable, ITextureCoordinate, IClone
         get; set;
     } = Color.White;
 
+    /// <summary>
+    /// How <see cref="Color"/> combines with the texture. Add draws the nine-slice untinted and
+    /// then adds Color in a second pass.
+    /// </summary>
+    public ColorOperation ColorOperation { get; set; } = ColorOperation.Modulate;
+
     public global::Gum.RenderingLibrary.Blend? Blend { get; set; }
 
     /// <summary>
@@ -249,27 +269,44 @@ public class NineSlice : RenderableBase, IAnimatable, ITextureCoordinate, IClone
 
         var absoluteRotation = this.GetAbsoluteRotation();
 
+        // The default (non-tiling, BorderScale 1, no custom frame width) case is left on
+        // raylib's built-in nine-patch draw — a single call that stretches the middle
+        // bands. Tiling, BorderScale, and CustomFrameTextureCoordinateWidth all require
+        // drawing the nine sections individually, which raylib's NPatch cannot express.
+        void DrawOnce()
+        {
+            if (!IsTilingMiddleSections && BorderScale == 1f && CustomFrameTextureCoordinateWidth == null)
+            {
+                RenderNinePatch(nonNullText, absoluteRotation);
+            }
+            else
+            {
+                RenderSections(nonNullText, absoluteRotation);
+            }
+        }
+
         if (Blend.HasValue)
         {
             global::RenderingLibrary.Graphics.Renderer.Self.BatchDrawCallCounter.BeginBlendMode(Blend.Value);
         }
 
-        // The default (non-tiling, BorderScale 1, no custom frame width) case is left on
-        // raylib's built-in nine-patch draw — a single call that stretches the middle
-        // bands. Tiling, BorderScale, and CustomFrameTextureCoordinateWidth all require
-        // drawing the nine sections individually, which raylib's NPatch cannot express.
-        if (!IsTilingMiddleSections && BorderScale == 1f && CustomFrameTextureCoordinateWidth == null)
-        {
-            RenderNinePatch(nonNullText, absoluteRotation);
-        }
-        else
-        {
-            RenderSections(nonNullText, absoluteRotation);
-        }
+        DrawOnce();
 
         if (Blend.HasValue)
         {
             global::RenderingLibrary.Graphics.Renderer.Self.BatchDrawCallCounter.EndBlendMode();
+        }
+
+        if (ColorOperation == ColorOperation.Add)
+        {
+            var counter = global::RenderingLibrary.Graphics.Renderer.Self.BatchDrawCallCounter;
+            counter.BeginShaderMode(global::RenderingLibrary.Graphics.Renderer.Self.AdditiveColorOverlayShader.Shader);
+            counter.BeginBlendModeAddColorPreserveDestinationAlpha();
+
+            DrawOnce();
+
+            counter.EndBlendMode();
+            counter.EndShaderMode();
         }
     }
 

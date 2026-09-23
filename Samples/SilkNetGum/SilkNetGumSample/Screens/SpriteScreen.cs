@@ -1,4 +1,4 @@
-using Gum.Content.AnimationChain;
+﻿using Gum.Content.AnimationChain;
 using Gum.Forms.Controls;
 using Gum.Graphics.Animation;
 using Gum.GueDeriving;
@@ -35,6 +35,9 @@ internal class SpriteScreen : FrameworkElement
         container.Height = -8;
         container.ChildrenLayout = ChildrenLayout.TopToBottomStack;
         container.StackSpacing = 4;
+        // Wraps into columns once the stack runs out of height, so the gallery never scrolls
+        // off the bottom. Labels are 20% wide (five columns).
+        container.WrapsChildren = true;
         this.AddChild(container);
 
         // Default sprite at native size — PercentageOfSourceFile + Width/Height = 100
@@ -86,14 +89,12 @@ internal class SpriteScreen : FrameworkElement
             tintRow.Children.Add(s);
         }
 
-#if !RAYLIB && !SKIA
-        // SpriteRuntime.ColorOperation property (#4792 Gap 1) — Modulate (default) multiplies the
-        // texture by the red tint, so the bear's detail shows through red; ColorTextureAlpha uses
-        // the texture only as an alpha mask and fills with the tint, so the bear reads as a flat
-        // red silhouette. Mirrors the MG/raylib SpriteScreen's identical row (raylib's row still
-        // uses the RenderableComponent cast since it lacks this property). MonoGame only for now;
-        // Skia doesn't expose the property yet, so this whole row is #if'd out here until it does.
-        AddLabel(container, "ColorOperation via SpriteRuntime.ColorOperation property (MonoGame only):");
+        // SpriteRuntime.ColorOperation property (#4792 Gap 1 on MonoGame, widened to every backend
+        // by #4821) — Modulate (default) multiplies the texture by the red tint, so the bear's
+        // detail shows through red; ColorTextureAlpha uses the texture only as an alpha mask and
+        // fills with the tint (SKBlendMode.SrcIn on Skia), so the bear reads as a flat red
+        // silhouette. Mirrors the MG/raylib SpriteScreen's identical row.
+        AddLabel(container, "ColorOperation via SpriteRuntime.ColorOperation property:");
         ContainerRuntime colorOpPropertyRow = AddRow(container);
         foreach (RenderingLibrary.Graphics.ColorOperation colorOperation in new[]
         {
@@ -109,7 +110,64 @@ internal class SpriteScreen : FrameworkElement
             s.ColorOperation = colorOperation;
             colorOpPropertyRow.Children.Add(s);
         }
-#endif
+
+        // ColorOperation.Add via property (#4892) — same white-silhouette effect as the
+        // animation-frame row below, but ColorOperation.Add is set directly on
+        // SpriteRuntime.ColorOperation with no animation chain involved. Mirrors the
+        // MG/raylib SpriteScreen's identical row.
+        AddLabel(container, "ColorOperation.Add via property (normal bear, white-silhouette Add bear):");
+        ContainerRuntime addPropertyRow = AddRow(container);
+        foreach (bool useAdd in new[] { false, true })
+        {
+            SpriteRuntime s = new SpriteRuntime();
+            s.SourceFileName = "BearTexture.png";
+            s.Width = 64;
+            s.Height = 64;
+            if (useAdd)
+            {
+                s.Color = SKColors.White;
+                s.ColorOperation = RenderingLibrary.Graphics.ColorOperation.Add;
+            }
+            addPropertyRow.Children.Add(s);
+        }
+
+        // Add color operation (#4792 Gap 2 on MonoGame, extended to Skia by #4821 gap 3) — an
+        // authored AnimationFrameColorOperation.Add frame with Red/Green/Blue=255 renders as a flat
+        // white silhouette (tex.rgb + white saturates to white wherever the texture has any alpha):
+        // the MonsterProjectWeb "un-revealed monster" use case from #4792. Left sprite plays the
+        // chain normally (no color op authored, so it looks like the plain bear); right sprite's
+        // chain frame carries the Add tint. Mirrors the MG/raylib SpriteScreen's identical row.
+        AddLabel(container, "Add color operation (normal bear, white-silhouette Add bear):");
+        ContainerRuntime addRow = AddRow(container);
+        SpriteRuntime bearTextureSource = new SpriteRuntime();
+        bearTextureSource.SourceFileName = "BearTexture.png";
+        SKBitmap? bearTexture = bearTextureSource.Texture;
+        foreach (SKColor? addTint in new SKColor?[] { null, SKColors.White })
+        {
+            SpriteRuntime s = new SpriteRuntime();
+            s.WidthUnits = Gum.DataTypes.DimensionUnitType.PercentageOfSourceFile;
+            s.HeightUnits = Gum.DataTypes.DimensionUnitType.PercentageOfSourceFile;
+            s.Width = 100;
+            s.Height = 100;
+
+            AnimationChain chain = new AnimationChain { Name = "AddDemo" };
+            AnimationFrame frame = new AnimationFrame { FrameLength = 1.0f, Texture = bearTexture };
+            if (addTint.HasValue)
+            {
+                frame.ColorOperation = AnimationFrameColorOperation.Add;
+                frame.Red = addTint.Value.Red;
+                frame.Green = addTint.Value.Green;
+                frame.Blue = addTint.Value.Blue;
+            }
+            chain.Add(frame);
+
+            AnimationChainList chainList = new AnimationChainList();
+            chainList.Add(chain);
+            s.AnimationChains = chainList;
+            s.CurrentChainName = "AddDemo";
+
+            addRow.Children.Add(s);
+        }
 
         // Alpha — same sprite at 64 / 128 / 192 / 255.
         AddLabel(container, "Alpha (64, 128, 192, 255):");
@@ -136,6 +194,26 @@ internal class SpriteScreen : FrameworkElement
             s.FlipHorizontal = h;
             s.FlipVertical = v;
             flipRow.Children.Add(s);
+        }
+
+        // Flipping an atlas cell (issue #4854) — a source rect that doesn't start at the texture
+        // origin, so a flip that shifts the sample window shows the neighbouring cell instead.
+        AddLabel(container, "Flipping an atlas cell (none, horizontal, vertical, both):");
+        ContainerRuntime flipCellRow = AddRow(container);
+        foreach ((bool h, bool v) in new[] { (false, false), (true, false), (false, true), (true, true) })
+        {
+            SpriteRuntime s = new SpriteRuntime();
+            s.SourceFileName = "FrameSheet.png";
+            s.TextureAddress = TextureAddress.Custom;
+            s.TextureLeft = 438;
+            s.TextureTop = 231;
+            s.TextureWidth = 42;
+            s.TextureHeight = 42;
+            s.Width = 64;
+            s.Height = 64;
+            s.FlipHorizontal = h;
+            s.FlipVertical = v;
+            flipCellRow.Children.Add(s);
         }
 
         // Rotation — center-pivot so rotated sprites stay anchored.
@@ -245,8 +323,9 @@ internal class SpriteScreen : FrameworkElement
     {
         TextRuntime label = new TextRuntime();
         label.Text = text;
-        label.WidthUnits = Gum.DataTypes.DimensionUnitType.RelativeToChildren;
+        label.WidthUnits = Gum.DataTypes.DimensionUnitType.PercentageOfParent;
         label.HeightUnits = Gum.DataTypes.DimensionUnitType.RelativeToChildren;
+        label.Width = 20;
         container.Children.Add(label);
     }
 

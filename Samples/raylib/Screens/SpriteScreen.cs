@@ -1,4 +1,4 @@
-using Gum.Content.AnimationChain;
+﻿using Gum.Content.AnimationChain;
 using Gum.DataTypes;
 using Gum.Forms.Controls;
 using Gum.Graphics.Animation;
@@ -19,9 +19,18 @@ internal class SpriteScreen : FrameworkElement
     {
         Dock(Gum.Wireframe.Dock.Fill);
 
-        var page = NewSection(ChildrenLayout.TopToBottomStack, spacing: 4);
+        // Fills the screen and wraps into columns once the stack runs out of height, so the
+        // gallery never scrolls off the bottom. Labels are 20% wide (five columns).
+        var page = new ContainerRuntime();
+        page.WidthUnits = DimensionUnitType.RelativeToParent;
+        page.HeightUnits = DimensionUnitType.RelativeToParent;
         page.X = 4;
         page.Y = 4;
+        page.Width = -8;
+        page.Height = -8;
+        page.ChildrenLayout = ChildrenLayout.TopToBottomStack;
+        page.StackSpacing = 4;
+        page.WrapsChildren = true;
         this.AddChild(page);
 
         // Default sprite at native size — PercentageOfSourceFile + Width/Height = 100
@@ -120,12 +129,10 @@ internal class SpriteScreen : FrameworkElement
             colorOpRow.AddChild(s);
         }
 
-#if !RAYLIB && !SKIA
-        // SpriteRuntime.ColorOperation property (#4792 Gap 1) — same Modulate/ColorTextureAlpha
-        // demo as the row above, but through the new public property instead of casting to
-        // RenderableComponent. MonoGame only for now; raylib/Skia don't expose the property yet,
-        // so this whole row is #if'd out here until they do.
-        AddSectionLabel(page, "ColorOperation via SpriteRuntime.ColorOperation property (MonoGame only):");
+        // SpriteRuntime.ColorOperation property (#4792 Gap 1, widened to every backend by #4821) —
+        // same Modulate/ColorTextureAlpha demo as the row above, but through the public property
+        // instead of casting to RenderableComponent.
+        AddSectionLabel(page, "ColorOperation via SpriteRuntime.ColorOperation property:");
         var colorOpPropertyRow = NewSection(ChildrenLayout.LeftToRightStack, spacing: 6);
         page.AddChild(colorOpPropertyRow);
         foreach (var colorOperation in new[] { ColorOperation.Modulate, ColorOperation.ColorTextureAlpha })
@@ -138,7 +145,66 @@ internal class SpriteScreen : FrameworkElement
             s.ColorOperation = colorOperation;
             colorOpPropertyRow.AddChild(s);
         }
-#endif
+
+        // ColorOperation.Add via property (#4892) — same white-silhouette effect as the
+        // animation-frame row below, but ColorOperation.Add is set directly on
+        // SpriteRuntime.ColorOperation with no animation chain involved. Mirrors the
+        // MG/SilkNetGum SpriteScreen's identical row.
+        AddSectionLabel(page, "ColorOperation.Add via property (normal bear, white-silhouette Add bear):");
+        var addPropertyRow = NewSection(ChildrenLayout.LeftToRightStack, spacing: 6);
+        page.AddChild(addPropertyRow);
+        foreach (var useAdd in new[] { false, true })
+        {
+            var s = new SpriteRuntime();
+            s.SourceFileName = "resources\\BearTexture.png";
+            s.Width = 64;
+            s.Height = 64;
+            if (useAdd)
+            {
+                s.Color = Color.White;
+                s.ColorOperation = ColorOperation.Add;
+            }
+            addPropertyRow.AddChild(s);
+        }
+
+        // Add color operation (#4792 Gap 2 on MonoGame, extended to raylib by #4821 gap 2) — an
+        // authored AnimationFrameColorOperation.Add frame with Red/Green/Blue=255 renders as a flat
+        // white silhouette (tex.rgb + white saturates to white wherever the texture has any alpha):
+        // the MonsterProjectWeb "un-revealed monster" use case from #4792. Left sprite plays the
+        // chain normally (no color op authored, so it looks like the plain bear); right sprite's
+        // chain frame carries the Add tint. Mirrors the MG SpriteScreen's identical row.
+        AddSectionLabel(page, "Add color operation (normal bear, white-silhouette Add bear):");
+        var addRow = NewSection(ChildrenLayout.LeftToRightStack, spacing: 6);
+        page.AddChild(addRow);
+        var bearTextureSource = new SpriteRuntime();
+        bearTextureSource.SourceFileName = "resources\\BearTexture.png";
+        var bearTexture = bearTextureSource.Texture;
+        foreach (var addTint in new Color?[] { null, Color.White })
+        {
+            var s = new SpriteRuntime();
+            s.WidthUnits = DimensionUnitType.PercentageOfSourceFile;
+            s.HeightUnits = DimensionUnitType.PercentageOfSourceFile;
+            s.Width = 100;
+            s.Height = 100;
+
+            var chain = new AnimationChain { Name = "AddDemo" };
+            var frame = new AnimationFrame { FrameLength = 1.0f, Texture = bearTexture };
+            if (addTint.HasValue)
+            {
+                frame.ColorOperation = AnimationFrameColorOperation.Add;
+                frame.Red = addTint.Value.R;
+                frame.Green = addTint.Value.G;
+                frame.Blue = addTint.Value.B;
+            }
+            chain.Add(frame);
+
+            var chainList = new AnimationChainList();
+            chainList.Add(chain);
+            s.AnimationChains = chainList;
+            s.CurrentChainName = "AddDemo";
+
+            addRow.AddChild(s);
+        }
 
         // Alpha — same sprite at 64 / 128 / 192 / 255.
         AddSectionLabel(page, "Alpha (64, 128, 192, 255):");
@@ -167,6 +233,27 @@ internal class SpriteScreen : FrameworkElement
             s.FlipHorizontal = h;
             s.FlipVertical = v;
             flipRow.AddChild(s);
+        }
+
+        // Flipping an atlas cell (issue #4854) — a source rect that doesn't start at the texture
+        // origin, so a flip that shifts the sample window shows the neighbouring cell instead.
+        AddSectionLabel(page, "Flipping an atlas cell (none, horizontal, vertical, both):");
+        var flipCellRow = NewSection(ChildrenLayout.LeftToRightStack, spacing: 6);
+        page.AddChild(flipCellRow);
+        foreach (var (h, v) in new[] { (false, false), (true, false), (false, true), (true, true) })
+        {
+            var s = new SpriteRuntime();
+            s.SourceFileName = "resources\\FrameSheet.png";
+            s.TextureAddress = TextureAddress.Custom;
+            s.TextureLeft = 438;
+            s.TextureTop = 231;
+            s.TextureWidth = 42;
+            s.TextureHeight = 42;
+            s.Width = 64;
+            s.Height = 64;
+            s.FlipHorizontal = h;
+            s.FlipVertical = v;
+            flipCellRow.AddChild(s);
         }
 
         // Rotation — center-pivot so rotated sprites stay anchored. Matches the MG screen.
@@ -301,9 +388,9 @@ internal class SpriteScreen : FrameworkElement
         label.Red = 220;
         label.Green = 220;
         label.Blue = 220;
-        label.WidthUnits = DimensionUnitType.RelativeToChildren;
+        label.WidthUnits = DimensionUnitType.PercentageOfParent;
         label.HeightUnits = DimensionUnitType.RelativeToChildren;
-        label.Width = 0;
+        label.Width = 20;
         label.Height = 0;
         parent.AddChild(label);
     }

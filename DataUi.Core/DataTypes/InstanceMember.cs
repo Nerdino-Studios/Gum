@@ -343,6 +343,16 @@ namespace WpfDataUi.DataTypes
         public virtual bool IsIndeterminate { get; } = false;
 
         /// <summary>
+        /// The value "Make Default" would restore this member to, shown in its menu label (#4893).
+        /// Null means no preview is available (the base <see cref="InstanceMember"/> never has one -
+        /// only <c>StateReferencingInstanceMember</c> overrides this) or, for a real row, that the
+        /// resolved default genuinely is null - either way the label falls back to plain "Make Default".
+        /// Evaluated only when a right-click menu is actually built, not on every grid refresh, since it
+        /// requires a recursive inheritance walk.
+        /// </summary>
+        public virtual object? MakeDefaultPreviewValue => null;
+
+        /// <summary>
         /// Whether the shown value is the default, differs across a multi-selection, or is set
         /// explicitly. Displayers tint their field from this.
         /// </summary>
@@ -478,6 +488,15 @@ namespace WpfDataUi.DataTypes
             OnPropertyChanged("Value");
             OnPropertyChanged(nameof(IsDefault));
         }
+
+        /// <summary>
+        /// Raises a change notification for <see cref="IsDefault"/> alone, without <see cref="SimulateValueChanged"/>'s
+        /// "Value" notification, which would redundantly re-trigger a live displayer's own refresh. Needed after a
+        /// row's displayer was already refreshed directly (its own read of the current value already covers "Value")
+        /// but nothing else has told this member's other listeners - e.g. a row-frame's "not default" marker icon,
+        /// bound straight to <see cref="IsDefault"/> - that it changed.
+        /// </summary>
+        public void NotifyIsDefaultChanged() => OnPropertyChanged(nameof(IsDefault));
 
         protected virtual void OnPropertyChanged(string propertyName)
         {

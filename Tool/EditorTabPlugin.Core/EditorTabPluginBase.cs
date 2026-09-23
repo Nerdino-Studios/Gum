@@ -55,7 +55,7 @@ namespace Gum.Plugins.InternalPlugins.EditorTab;
 /// <see cref="HandleWireframeDrop"/>.
 /// </summary>
 #pragma warning disable CA1001 // Types that own disposable fields should be disposable - This is never disposed so suppressing this
-public abstract class EditorTabPluginBase : PluginBase, IPriorityPlugin, IRecipient<UiBaseFontSizeChangedMessage>, IRecipient<ThemeChangedMessage>
+public abstract class EditorTabPluginBase : PluginBase, IPriorityPlugin, IRecipient<UiBaseFontSizeChangedMessage>, IRecipient<ThemeChangedMessage>, IRecipient<SiblingOrderingChangedMessage>
 #pragma warning restore CA1001 // Types that own disposable fields should be disposable
 {
     #region Fields/Properties
@@ -156,6 +156,7 @@ public abstract class EditorTabPluginBase : PluginBase, IPriorityPlugin, IRecipi
     private readonly IPluginManager _pluginManager;
     private IWireframeEditorFactory _wireframeEditorFactory;
     private readonly IPreviewLauncher _previewLauncher;
+    private readonly EditorRenderableFactory _editorRenderableFactory;
 
     // Suppresses the redundant second wireframe rebuild when selecting an element forces its
     // default state (state event rebuilds) and then fires the element event for the same element.
@@ -241,7 +242,8 @@ public abstract class EditorTabPluginBase : PluginBase, IPriorityPlugin, IRecipi
         ICircularReferenceManager circularReferenceManager,
         IFavoriteComponentManager favoriteComponentManager,
         IPluginManager pluginManager,
-        IFileWatchIgnoreList fileWatchIgnoreList)
+        IFileWatchIgnoreList fileWatchIgnoreList,
+        IProjectState projectState)
     {
         _selectedState = selectedState;
         _undoManager = undoManager;
@@ -264,6 +266,7 @@ public abstract class EditorTabPluginBase : PluginBase, IPriorityPlugin, IRecipi
         _circularReferenceManager = circularReferenceManager;
         _favoriteComponentManager = favoriteComponentManager;
         _pluginManager = pluginManager;
+        _editorRenderableFactory = new EditorRenderableFactory(projectState);
 
         _scrollbarService = new ScrollbarService(_selectedState, _wireframeObjectManager, _projectManager);
         _editingManager = new EditingManager(
@@ -273,7 +276,8 @@ public abstract class EditorTabPluginBase : PluginBase, IPriorityPlugin, IRecipi
             _setVariableLogic,
             _selectedState,
             _circularReferenceManager,
-            _favoriteComponentManager
+            _favoriteComponentManager,
+            _hotkeyManager
             );
 
         _layerService = new Services.LayerService();
@@ -317,7 +321,13 @@ public abstract class EditorTabPluginBase : PluginBase, IPriorityPlugin, IRecipi
 
         IPreviewGumxProjectionService previewGumxProjectionService =
             new PreviewGumxProjectionService(new ConvertProjectToJsonService(fileWatchIgnoreList));
-        _previewLauncher = new PreviewLauncher(_selectedState, _projectManager, _outputManager, previewGumxProjectionService, AppContext.BaseDirectory);
+        _previewLauncher = new PreviewLauncher(
+            _selectedState,
+            _projectManager,
+            _outputManager,
+            previewGumxProjectionService,
+            AppContext.BaseDirectory,
+            isSortByBatchKey: () => ReferenceEquals(Renderer.SiblingOrdering, BatchKeyGroupedOrderer.Instance));
 
         _editorViewModel = new EditorViewModel(
             _pluginManager,
@@ -406,6 +416,8 @@ public abstract class EditorTabPluginBase : PluginBase, IPriorityPlugin, IRecipi
         this.ElementSelected += HandleElementSelected;
         this.ElementSelected += _scrollbarService.HandleElementSelected;
         this.ElementSelected += element => _previewLauncher.PushSelection(element);
+        // Picking a state in the tool re-shows the previewed element in that state (issue #4856).
+        this.ReactToStateSaveSelected += _ => _previewLauncher.PushSelection(_selectedState.SelectedElement);
         this.ElementDelete += HandleElementDeleted;
 
         // Keeps a live .gumx preview session's temp JSON copy in sync with the real, edited project
@@ -493,7 +505,7 @@ public abstract class EditorTabPluginBase : PluginBase, IPriorityPlugin, IRecipi
 
     private IRenderableIpso? HandleCreateRenderableForType(string type)
     {
-        return FallbackRenderableFactory.TryHandleAsBaseType(type, SystemManagers.Default) as IRenderableIpso;
+        return _editorRenderableFactory.CreateRenderableForType(type, SystemManagers.Default);
     }
 
     private GraphicalUiElement? HandleCreateGraphicalUiElement(ElementSave elementSave)
@@ -1590,6 +1602,11 @@ public abstract class EditorTabPluginBase : PluginBase, IPriorityPlugin, IRecipi
         _canvas.SetGuideColors(settings.GuideLine, settings.GuideText);
         static Microsoft.Xna.Framework.Color ToXna(Color color) => new Microsoft.Xna.Framework.Color(color.R, color.G, color.B, color.A);
     }
+
+    // The preview reads the orderer from every selection-file write, so re-sending the current
+    // selection is all it takes to make it follow a Performance-tab toggle (issue #4860).
+    void IRecipient<SiblingOrderingChangedMessage>.Receive(SiblingOrderingChangedMessage message) =>
+        _previewLauncher.PushSelection(_selectedState.SelectedElement);
 
     void IRecipient<ThemeChangedMessage>.Receive(ThemeChangedMessage message)
     {

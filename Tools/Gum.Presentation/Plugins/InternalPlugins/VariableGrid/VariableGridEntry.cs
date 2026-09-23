@@ -121,10 +121,11 @@ public class VariableGridEntry
     /// </summary>
     public bool IsStateSelection => _converter is AvailableStatesConverter;
 
-    // Prior to April 10 2023 this was always true. Now that we have multi-select, we don't want to
-    // call it here if editing multiple objects. Instead, we want to have the multi-select call it and
-    // pass the list of variables so that a single undo can be performed.
-    /// <summary>Whether <see cref="SetValue"/>/<see cref="ResetToDefault"/> should refresh/record undo immediately, or defer to a multi-select caller.</summary>
+    /// <summary>
+    /// Whether <see cref="SetValue"/>/<see cref="ResetToDefault"/> should rebuild the grid and record
+    /// undo immediately. False when the row is wrapped in a multi-select edit, whose owner does both
+    /// once for the whole batch (see <c>MultiSelectCommitLogic</c>).
+    /// </summary>
     public bool IsCallingRefresh { get; set; } = true;
 
     /// <summary>The value prior to the most recent full (non-intermediate) commit, used when reacting to the change.</summary>
@@ -587,6 +588,31 @@ public class VariableGridEntry
         }
     }
 
+    /// <summary>
+    /// The value "Make Default" (#4893) would restore this variable to: what it would resolve to if
+    /// the selected state stopped authoring it explicitly, even when (as with <see cref="IsDefault"/>
+    /// already true) nothing is currently authored - in that case this walks past the currently-shown
+    /// value to the next level (the default state, or the base type/inherited definition). Computed
+    /// on demand rather than cached, since it requires a recursive inheritance walk.
+    /// </summary>
+    public object? GetMakeDefaultPreviewValue()
+    {
+        if (RootVariableName is "Name" or "BaseType")
+        {
+            return null;
+        }
+
+        var effectiveVariableName = VariableSave?.Name ?? _variableName;
+        var toReturn = _stateSave?.GetValueRecursive(effectiveVariableName, ignoreOwnValue: true);
+
+        if (_isVariable && toReturn == null)
+        {
+            toReturn = DefaultValueFallback?.Invoke();
+        }
+
+        return toReturn;
+    }
+
     #endregion
 
     #region Set Value
@@ -938,7 +964,9 @@ public class VariableGridEntry
 
         bool handledByExposedVariable = false;
 
-        bool effectiveRefresh = commitType == VariablePropertyCommitType.Full || IsCallingRefresh;
+        // A multi-select owner (IsCallingRefresh == false) rebuilds the grid and records undo once
+        // for the whole batch; the intermediate-commit gate on structural refreshes lives downstream.
+        bool effectiveRefresh = IsCallingRefresh;
 
         bool effectiveRecordUndo = IsCallingRefresh && trySave;
 

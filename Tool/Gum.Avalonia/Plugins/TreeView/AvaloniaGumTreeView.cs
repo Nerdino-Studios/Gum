@@ -41,12 +41,12 @@ public sealed class AvaloniaGumTreeView : UserControl
     private const double DragThreshold = 4;
     private const double AutoScrollBand = 20;
     private const double AutoScrollStep = 12;
-    private const double IntoFirstIndent = 14;
 
     private readonly ObservableCollection<TreeRow> _rows;
     private readonly ItemsControl _itemsControl;
     private readonly ScrollViewer _scrollViewer;
     private readonly global::Avalonia.Controls.Canvas _dropOverlay;
+    private readonly Border _dropParentHighlight;
     private readonly Border _dropIndicator;
     private readonly HashSet<GumTreeNode> _subscribedNodes;
     private readonly HashSet<GumTreeNodeCollection> _subscribedCollections;
@@ -92,12 +92,23 @@ public sealed class AvaloniaGumTreeView : UserControl
                 _itemsControl.MinWidth = _scrollViewer.Viewport.Width;
             }
         };
+        // A soft wash behind the row that will become the dropped nodes' new parent, so a
+        // Before/After/IntoFirst insert doesn't leave the parent to be inferred from the line's
+        // position alone (#4913). Drawn under the line/rectangle, and lighter than it, so it reads
+        // as context rather than competing with it.
+        _dropParentHighlight = new Border
+        {
+            IsVisible = false,
+            IsHitTestVisible = false,
+            CornerRadius = new CornerRadius(2),
+        }.WithThemeResource(Border.BackgroundProperty, "Frb.Brushes.Primary.Transparent");
         _dropIndicator = new Border
         {
             IsVisible = false,
             IsHitTestVisible = false,
         }.WithThemeResource(Border.BorderBrushProperty, "Frb.Brushes.Primary");
         _dropOverlay = new global::Avalonia.Controls.Canvas { IsHitTestVisible = false };
+        _dropOverlay.Children.Add(_dropParentHighlight);
         _dropOverlay.Children.Add(_dropIndicator);
 
         Grid grid = new Grid();
@@ -108,6 +119,14 @@ public sealed class AvaloniaGumTreeView : UserControl
         Nodes.CollectionChanged += (_, _) => RequestRebuild();
 
         DragDrop.SetAllowDrop(this, true);
+        // DragEnterEvent gets its own tick, not just DragOverEvent: Avalonia's DragDropDevice tracks
+        // the hit-tested drop target and, whenever it changes - including between two Controls of the
+        // same row's template (the label, the icon, the blank space) - fires DragLeave on the old one
+        // and DragEnter on the new one INSTEAD of DragOver for that pointer move. Left unhandled,
+        // DragEnter falls through with no explicit effect, so the OS showed its own default cursor for
+        // one tick every time the pointer crossed a sub-element boundary within a row, before the next
+        // DragOver corrected it back (#4906 follow-up). Handling it identically to DragOver closes that gap.
+        AddHandler(DragDrop.DragEnterEvent, HandleDragOver);
         AddHandler(DragDrop.DragOverEvent, HandleDragOver);
         AddHandler(DragDrop.DragLeaveEvent, (_, _) => ClearDropIndicator());
         AddHandler(DragDrop.DropEvent, HandleDrop);
@@ -234,7 +253,68 @@ public sealed class AvaloniaGumTreeView : UserControl
             AddVisibleRows(root, 0, rows);
         }
 
+        (GumTreeNode anchorNode, double anchorOffsetWithinRow, double rowHeight)? anchor = CaptureScrollAnchor();
+
         SyncRows(rows);
+
+        if (anchor is { } captured)
+        {
+            RestoreScrollAnchor(captured.anchorNode, captured.anchorOffsetWithinRow, captured.rowHeight);
+        }
+    }
+
+    /// <summary>
+    /// The node currently at the top of the viewport, how far scrolled into its row, and the row
+    /// height at capture time - so a row inserted or removed above the viewport (e.g. adding an
+    /// instance while scrolled past its container, #4882) can be compensated for instead of visually
+    /// shifting everything already on screen. The row height is captured once and reused by
+    /// <see cref="RestoreScrollAnchor"/> rather than re-measured after the rows change, since a
+    /// rebuild can scroll the only realized rows out from under <see cref="RowHeight"/> before the
+    /// next layout pass catches up.
+    /// </summary>
+    private (GumTreeNode, double, double)? CaptureScrollAnchor()
+    {
+        double rowHeight = RowHeight;
+        if (rowHeight <= 0 || _rows.Count == 0)
+        {
+            return null;
+        }
+
+        int anchorIndex = Math.Clamp((int)(_scrollViewer.Offset.Y / rowHeight), 0, _rows.Count - 1);
+        double offsetWithinRow = _scrollViewer.Offset.Y - anchorIndex * rowHeight;
+        return (_rows[anchorIndex].Node, offsetWithinRow, rowHeight);
+    }
+
+    /// <summary>Shifts the scroll offset so <paramref name="anchorNode"/> is back at the same on-screen position it held before the rebuild, if it's still in the tree.</summary>
+    private void RestoreScrollAnchor(GumTreeNode anchorNode, double anchorOffsetWithinRow, double rowHeight)
+    {
+        int newIndex = IndexOfRow(anchorNode);
+        if (newIndex < 0)
+        {
+            return;
+        }
+
+        double newOffsetY = Math.Max(0, newIndex * rowHeight + anchorOffsetWithinRow);
+        if (newOffsetY != _scrollViewer.Offset.Y)
+        {
+            _scrollViewer.Offset = _scrollViewer.Offset.WithY(newOffsetY);
+        }
+    }
+
+    /// <summary>
+    /// The height of a realized row, or a fallback estimate when none is realized. Reads any
+    /// currently-realized row rather than assuming index 0 is realized, since scrolling past the top
+    /// (the common case a scroll-anchor is captured in) virtualizes it away.
+    /// </summary>
+    private double RowHeight
+    {
+        get
+        {
+            double realized = _itemsControl.GetVisualDescendants().OfType<TreeRowView>()
+                .Select(row => row.Bounds.Height)
+                .FirstOrDefault(height => height > 0);
+            return realized > 0 ? realized : DefaultRowHeight;
+        }
     }
 
     private void AddVisibleRows(GumTreeNode node, int level, List<TreeRow> rows)
@@ -393,23 +473,37 @@ public sealed class AvaloniaGumTreeView : UserControl
     }
 
     /// <summary>The node whose row is at <paramref name="position"/> (in this control's coordinates), or null.</summary>
-    public GumTreeNode? NodeAt(Point position) => RowViewAt(position)?.Row?.Node;
+    public GumTreeNode? NodeAt(Point position) => RowAt(position)?.Node;
 
-    private TreeRowView? RowViewAt(Point position)
+    /// <summary>One row's node and its on-screen extent, in this control's coordinates.</summary>
+    private readonly record struct LogicalRow(GumTreeNode Node, double Top, double Height);
+
+    /// <summary>
+    /// Finds the row at <paramref name="position"/> from the row list and the scroll offset directly,
+    /// rather than hit-testing the realized <see cref="TreeRowView"/> visuals. A drag can move the
+    /// scroll offset (<see cref="AutoScrollWhileDragging"/>) and immediately ask where the pointer
+    /// landed in the same tick, before the virtualizing panel's next layout pass has realized rows at
+    /// their new positions - hit-testing then sees stale visuals and drops or misidentifies the target,
+    /// which is what made the drop indicator and the drag cursor flicker while auto-scrolling (#4906).
+    /// Row math against <see cref="_rows"/> (always complete, never virtualized) has no such lag.
+    /// </summary>
+    private LogicalRow? RowAt(Point position)
     {
-        if (this.InputHitTest(position) is not Visual hit)
+        double rowHeight = RowHeight;
+        if (rowHeight <= 0 || _rows.Count == 0 || position.Y < 0 || position.X > _scrollViewer.Viewport.Width)
         {
             return null;
         }
 
-        for (Visual? current = hit; current != null && current != this; current = current.GetVisualParent())
+        double contentY = position.Y + _scrollViewer.Offset.Y;
+        int index = (int)(contentY / rowHeight);
+        if (index < 0 || index >= _rows.Count)
         {
-            if (current is TreeRowView rowView)
-            {
-                return rowView;
-            }
+            return null;
         }
-        return null;
+
+        double top = index * rowHeight - _scrollViewer.Offset.Y;
+        return new LogicalRow(_rows[index].Node, top, rowHeight);
     }
 
     private static TreePointerButton ToButton(PointerUpdateKind kind) => kind switch
@@ -484,16 +578,7 @@ public sealed class AvaloniaGumTreeView : UserControl
         base.OnKeyUp(e);
     }
 
-    private int VisibleRowCount
-    {
-        get
-        {
-            double rowHeight = _itemsControl.ContainerFromIndex(0)?.Bounds.Height is > 0 and double height
-                ? height
-                : DefaultRowHeight;
-            return Math.Max(1, (int)(_scrollViewer.Viewport.Height / rowHeight));
-        }
-    }
+    private int VisibleRowCount => Math.Max(1, (int)(_scrollViewer.Viewport.Height / RowHeight));
 
     private static TreeNavigationKey? ToNavigationKey(Key key) => key switch
     {
@@ -557,15 +642,15 @@ public sealed class AvaloniaGumTreeView : UserControl
             return;
         }
 
-        (TreeRowView? rowView, GumTreeNode? target, TreeDropKind kind) = GetDropAt(position, dragged);
+        (LogicalRow? row, GumTreeNode? target, TreeDropKind kind) = GetDropAt(position, dragged);
 
         TreeDropValidationEventArgs validation = new TreeDropValidationEventArgs(dragged, target, kind);
         ValidateSortingDrop?.Invoke(this, validation);
 
-        if (validation.Allow && validation.TargetNode != null && rowView != null)
+        if (validation.Allow && validation.TargetNode != null && row != null)
         {
             e.DragEffects = DragDropEffects.Move;
-            ShowDropIndicator(rowView, validation.Kind);
+            ShowDropIndicator(row.Value, validation.Kind);
         }
         else
         {
@@ -617,9 +702,9 @@ public sealed class AvaloniaGumTreeView : UserControl
         return new TreeExternalDragEventArgs(files is { Length: > 0 } ? files : null, standardElementTypeName, target);
     }
 
-    private (TreeRowView? RowView, GumTreeNode? Target, TreeDropKind Kind) GetDropAt(Point position, IReadOnlyList<GumTreeNode> dragged)
+    private (LogicalRow? Row, GumTreeNode? Target, TreeDropKind Kind) GetDropAt(Point position, IReadOnlyList<GumTreeNode> dragged)
     {
-        if (RowViewAt(position) is not { Row: { } row } rowView)
+        if (RowAt(position) is not { } row)
         {
             return (null, null, TreeDropKind.None);
         }
@@ -629,9 +714,8 @@ public sealed class AvaloniaGumTreeView : UserControl
             return (null, null, TreeDropKind.None);
         }
 
-        Point inRow = this.TranslatePoint(position, rowView) ?? default;
-        double fraction = rowView.Bounds.Height > 0 ? inRow.Y / rowView.Bounds.Height : 0.5;
-        return (rowView, row.Node, TreeDropLogic.GetKind(row.Node, fraction));
+        double fraction = row.Height > 0 ? (position.Y - row.Top) / row.Height : 0.5;
+        return (row, row.Node, TreeDropLogic.GetKind(row.Node, fraction));
     }
 
     private void AutoScrollWhileDragging(Point position)
@@ -646,42 +730,45 @@ public sealed class AvaloniaGumTreeView : UserControl
         }
     }
 
-    // A line between rows for an insert, an outline around the row for a drop onto it.
-    private void ShowDropIndicator(TreeRowView rowView, TreeDropKind kind)
+    // A line between rows for an insert, an outline around the row for a drop onto it. The line's
+    // left margin matches where the drop will land in the hierarchy - flush with the target row's own
+    // highlight for a sibling or an append (Before/After/Into), one level further in for a new first
+    // child (IntoFirst) - rather than always spanning the full width, which gave no visual cue of the
+    // resulting nesting (#4913). A Before/After/IntoFirst insert also washes the row that will become
+    // the new parent, so it doesn't have to be inferred from the line's position alone.
+    private void ShowDropIndicator(LogicalRow row, TreeDropKind kind)
     {
-        if (rowView.TranslatePoint(new Point(0, 0), _dropOverlay) is not { } topLeft)
-        {
-            ClearDropIndicator();
-            return;
-        }
-
-        double width = rowView.Bounds.Width;
-        double height = Math.Max(1, rowView.Bounds.Height);
+        Point topLeft = new Point(-_scrollViewer.Offset.X, row.Top);
+        double width = Math.Max(_scrollViewer.Viewport.Width, _scrollViewer.Extent.Width);
+        double height = Math.Max(1, row.Height);
         const double lineThickness = 2;
+        double indent = TreeDropLogic.GetIndicatorIndent(row.Node, kind, TreeRowView.Indent);
 
         switch (kind)
         {
             case TreeDropKind.Into:
                 _dropIndicator.BorderThickness = new Thickness(lineThickness);
-                Place(topLeft.X, topLeft.Y, width, height);
+                Place(topLeft.X + indent, topLeft.Y, Math.Max(0, width - indent), height);
                 break;
             case TreeDropKind.Before:
                 _dropIndicator.BorderThickness = new Thickness(0, lineThickness, 0, 0);
-                Place(topLeft.X, topLeft.Y - lineThickness / 2, width, lineThickness);
+                Place(topLeft.X + indent, topLeft.Y - lineThickness / 2, Math.Max(0, width - indent), lineThickness);
                 break;
             case TreeDropKind.After:
                 _dropIndicator.BorderThickness = new Thickness(0, lineThickness, 0, 0);
-                Place(topLeft.X, topLeft.Y + height - lineThickness / 2, width, lineThickness);
+                Place(topLeft.X + indent, topLeft.Y + height - lineThickness / 2, Math.Max(0, width - indent), lineThickness);
                 break;
             case TreeDropKind.IntoFirst:
                 // Indented, because the insert point is inside the row above it.
                 _dropIndicator.BorderThickness = new Thickness(0, lineThickness, 0, 0);
-                Place(topLeft.X + IntoFirstIndent, topLeft.Y + height - lineThickness / 2, Math.Max(0, width - IntoFirstIndent), lineThickness);
+                Place(topLeft.X + indent, topLeft.Y + height - lineThickness / 2, Math.Max(0, width - indent), lineThickness);
                 break;
             default:
                 ClearDropIndicator();
                 break;
         }
+
+        ShowParentHighlight(TreeDropLogic.GetParentHighlightNode(row.Node, kind), width);
 
         void Place(double x, double y, double w, double h)
         {
@@ -693,7 +780,41 @@ public sealed class AvaloniaGumTreeView : UserControl
         }
     }
 
-    private void ClearDropIndicator() => _dropIndicator.IsVisible = false;
+    private void ShowParentHighlight(GumTreeNode? parentNode, double width)
+    {
+        if (parentNode == null || RowFor(parentNode) is not { } parentRow)
+        {
+            _dropParentHighlight.IsVisible = false;
+            return;
+        }
+
+        double indent = parentNode.Level * TreeRowView.Indent;
+        global::Avalonia.Controls.Canvas.SetLeft(_dropParentHighlight, -_scrollViewer.Offset.X + indent);
+        global::Avalonia.Controls.Canvas.SetTop(_dropParentHighlight, parentRow.Top);
+        _dropParentHighlight.Width = Math.Max(0, width - indent);
+        _dropParentHighlight.Height = Math.Max(1, parentRow.Height);
+        _dropParentHighlight.IsVisible = true;
+    }
+
+    /// <summary>The visible row for <paramref name="node"/>, or null when it isn't currently shown.</summary>
+    private LogicalRow? RowFor(GumTreeNode node)
+    {
+        int index = IndexOfRow(node);
+        if (index < 0)
+        {
+            return null;
+        }
+
+        double rowHeight = RowHeight;
+        double top = index * rowHeight - _scrollViewer.Offset.Y;
+        return new LogicalRow(node, top, rowHeight);
+    }
+
+    private void ClearDropIndicator()
+    {
+        _dropIndicator.IsVisible = false;
+        _dropParentHighlight.IsVisible = false;
+    }
 
     #endregion
 }

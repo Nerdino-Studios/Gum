@@ -45,8 +45,19 @@ public sealed unsafe class BatchDrawCallCounter
     private RenderStateChangeStatistics _statistics;
     private bool _active;
 
+    /// <summary>
+    /// Whether the current pass is actively banking draw calls into a <see cref="RenderStateChangeStatistics"/>
+    /// (i.e. <see cref="BeginPass"/> ran with the owned batch already initialized). False for the
+    /// whole pass when <see cref="EnsureInitialized"/> couldn't load the batch yet (raylib window not
+    /// ready) — in that case every <see cref="Bank"/> call for the pass is a no-op and
+    /// <see cref="RenderStateChangeStatistics.BankSegments"/> stays empty. Diagnostic only, added for
+    /// issue #4901 to distinguish "nothing was ready to count" from "counted and saw zero draws."
+    /// </summary>
+    public bool IsActive => _active;
+
     // GL blend factor / equation constants for the render-target premultiply pass. Kept here so
     // the raw-GL dependency stays contained to the one place that owns blend state.
+    private const int GlZero = 0;
     private const int GlOne = 1;
     private const int GlSrcAlpha = 0x0302;
     private const int GlOneMinusSrcAlpha = 0x0303;
@@ -194,6 +205,21 @@ public sealed unsafe class BatchDrawCallCounter
     {
         Bank();
         Rlgl.SetBlendFactorsSeparate(GlOne, GlOne, GlOne, GlOne, GlFuncAdd, GlFuncAdd);
+        Raylib.BeginBlendMode(BlendMode.CustomSeparate);
+    }
+
+    /// <summary>
+    /// Enters an additive blend that adds color onto the destination while leaving destination
+    /// alpha untouched (color factors ONE/ONE, alpha factors ZERO/ONE) - the raylib equivalent of
+    /// MonoGame's <c>BlendState.AddColorPreserveDestinationAlpha</c>, used for the
+    /// <see cref="global::Gum.Graphics.Animation.AnimationFrameColorOperation.Add"/> overlay pass
+    /// (#4821 gap 2) so the overlay brightens the sprite without widening or punching its silhouette
+    /// alpha. Pair with <see cref="EndBlendMode"/>.
+    /// </summary>
+    public void BeginBlendModeAddColorPreserveDestinationAlpha()
+    {
+        Bank();
+        Rlgl.SetBlendFactorsSeparate(GlOne, GlOne, GlZero, GlOne, GlFuncAdd, GlFuncAdd);
         Raylib.BeginBlendMode(BlendMode.CustomSeparate);
     }
 

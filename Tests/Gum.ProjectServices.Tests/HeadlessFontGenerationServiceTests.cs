@@ -82,166 +82,6 @@ public class HeadlessFontGenerationServiceTests : BaseTestClass
     }
 
     // -------------------------------------------------------------------------
-    // TryGetBmfcSaveFor
-    // -------------------------------------------------------------------------
-
-    #region TryGetBmfcSaveFor
-
-    [Fact]
-    public void TryGetBmfcSaveFor_ShouldReturnNull_WhenFontNotSet()
-    {
-        ScreenSave screen = new ScreenSave { Name = "TestScreen" };
-        StateSave state = AddState(screen);
-        SetVar(state, "FontSize", 18);
-
-        BmfcSave? result = _sut.TryGetBmfcSaveFor(null, state, fontRanges: "", spacingHorizontal: 1, spacingVertical: 1, forcedValues: null);
-
-        result.ShouldBeNull();
-    }
-
-    [Fact]
-    public void TryGetBmfcSaveFor_ShouldReturnNull_WhenFontSizeNotSet()
-    {
-        ScreenSave screen = new ScreenSave { Name = "TestScreen" };
-        StateSave state = AddState(screen);
-        SetVar(state, "Font", "Arial");
-
-        BmfcSave? result = _sut.TryGetBmfcSaveFor(null, state, fontRanges: "", spacingHorizontal: 1, spacingVertical: 1, forcedValues: null);
-
-        result.ShouldBeNull();
-    }
-
-    [Fact]
-    public void TryGetBmfcSaveFor_ShouldReturnBmfcSave_WhenFontAndSizeAreSet()
-    {
-        ScreenSave screen = new ScreenSave { Name = "TestScreen" };
-        StateSave state = AddState(screen);
-        SetVar(state, "Font", "Arial");
-        SetVar(state, "FontSize", 24);
-
-        BmfcSave? result = _sut.TryGetBmfcSaveFor(null, state, fontRanges: "32-126", spacingHorizontal: 2, spacingVertical: 3, forcedValues: null);
-
-        result.ShouldNotBeNull();
-        result.FontName.ShouldBe("Arial");
-        result.FontSize.ShouldBe(24);
-        result.Ranges.ShouldBe("32-126");
-        result.SpacingHorizontal.ShouldBe(2);
-        result.SpacingVertical.ShouldBe(3);
-    }
-
-    [Fact]
-    public void TryGetBmfcSaveFor_ShouldApplyDefaults_WhenOptionalPropertiesNotSet()
-    {
-        ScreenSave screen = new ScreenSave { Name = "TestScreen" };
-        StateSave state = AddState(screen);
-        SetVar(state, "Font", "Comic Sans MS");
-        SetVar(state, "FontSize", 12);
-
-        BmfcSave? result = _sut.TryGetBmfcSaveFor(null, state, fontRanges: "", spacingHorizontal: 1, spacingVertical: 1, forcedValues: null);
-
-        result.ShouldNotBeNull();
-        result.OutlineThickness.ShouldBe(0);
-        result.UseSmoothing.ShouldBe(true);
-        result.IsItalic.ShouldBe(false);
-        result.IsBold.ShouldBe(false);
-        result.HasDropshadow.ShouldBeFalse();
-        result.DropshadowOffsetX.ShouldBe(0f);
-        result.DropshadowOffsetY.ShouldBe(0f);
-        result.DropshadowBlur.ShouldBe(0f);
-        result.DropshadowRed.ShouldBe((byte)0);
-        result.DropshadowGreen.ShouldBe((byte)0);
-        result.DropshadowBlue.ShouldBe((byte)0);
-        result.DropshadowAlpha.ShouldBe((byte)0);
-    }
-
-    [Fact]
-    public void TryGetBmfcSaveFor_ShouldReadDropshadowVariables_WhenSetInState()
-    {
-        ScreenSave screen = new ScreenSave { Name = "TestScreen" };
-        StateSave state = AddState(screen);
-        SetVar(state, "Font", "Arial");
-        SetVar(state, "FontSize", 24);
-        SetVar(state, "HasDropshadow", true);
-        SetVar(state, "DropshadowOffsetX", 2f);
-        SetVar(state, "DropshadowOffsetY", 5f);
-        SetVar(state, "DropshadowBlur", 4f);
-        SetVar(state, "DropshadowRed", 10);
-        SetVar(state, "DropshadowGreen", 20);
-        SetVar(state, "DropshadowBlue", 30);
-        SetVar(state, "DropshadowAlpha", 200);
-
-        BmfcSave? result = _sut.TryGetBmfcSaveFor(null, state, fontRanges: "", spacingHorizontal: 1, spacingVertical: 1, forcedValues: null);
-
-        result.ShouldNotBeNull();
-        result.HasDropshadow.ShouldBeTrue();
-        result.DropshadowOffsetX.ShouldBe(2f);
-        result.DropshadowOffsetY.ShouldBe(5f);
-        result.DropshadowBlur.ShouldBe(4f);
-        result.DropshadowRed.ShouldBe((byte)10);
-        result.DropshadowGreen.ShouldBe((byte)20);
-        result.DropshadowBlue.ShouldBe((byte)30);
-        result.DropshadowAlpha.ShouldBe((byte)200);
-    }
-
-    [Fact]
-    public void TryGetBmfcSaveFor_ShouldReadOutlineItalicBold_WhenSetInState()
-    {
-        ScreenSave screen = new ScreenSave { Name = "TestScreen" };
-        StateSave state = AddState(screen);
-        SetVar(state, "Font", "Times New Roman");
-        SetVar(state, "FontSize", 32);
-        SetVar(state, "OutlineThickness", 2);
-        SetVar(state, "IsItalic", true);
-        SetVar(state, "IsBold", true);
-        SetVar(state, "UseFontSmoothing", false);
-
-        BmfcSave? result = _sut.TryGetBmfcSaveFor(null, state, fontRanges: "", spacingHorizontal: 1, spacingVertical: 1, forcedValues: null);
-
-        result.ShouldNotBeNull();
-        result.OutlineThickness.ShouldBe(2);
-        result.IsItalic.ShouldBe(true);
-        result.IsBold.ShouldBe(true);
-        result.UseSmoothing.ShouldBe(false);
-    }
-
-    [Fact]
-    public void TryGetBmfcSaveFor_ShouldUsePrefixedVariables_WhenInstanceProvided()
-    {
-        ScreenSave screen = new ScreenSave { Name = "TestScreen" };
-        InstanceSave instance = AddTextInstance(screen, "MyLabel");
-        StateSave state = AddState(screen);
-        SetVar(state, "MyLabel.Font", "Verdana");
-        SetVar(state, "MyLabel.FontSize", 16);
-
-        BmfcSave? result = _sut.TryGetBmfcSaveFor(instance, state, fontRanges: "", spacingHorizontal: 1, spacingVertical: 1, forcedValues: null);
-
-        result.ShouldNotBeNull();
-        result.FontName.ShouldBe("Verdana");
-        result.FontSize.ShouldBe(16);
-    }
-
-    [Fact]
-    public void TryGetBmfcSaveFor_ForcedValues_ShouldOverrideStateValues()
-    {
-        ScreenSave screen = new ScreenSave { Name = "TestScreen" };
-        StateSave state = AddState(screen);
-        SetVar(state, "Font", "Arial");
-        SetVar(state, "FontSize", 12);
-
-        StateSave forced = new StateSave();
-        SetVar(forced, "Font", "Impact");
-        SetVar(forced, "FontSize", 48);
-
-        BmfcSave? result = _sut.TryGetBmfcSaveFor(null, state, fontRanges: "", spacingHorizontal: 1, spacingVertical: 1, forcedValues: forced);
-
-        result.ShouldNotBeNull();
-        result.FontName.ShouldBe("Impact");
-        result.FontSize.ShouldBe(48);
-    }
-
-    #endregion
-
-    // -------------------------------------------------------------------------
     // CollectRequiredFonts — basic collection and deduplication
     // -------------------------------------------------------------------------
 
@@ -906,6 +746,51 @@ public class HeadlessFontGenerationServiceTests : BaseTestClass
 
             result.Values.ShouldContain(f => f.FontName == "Arial" && f.FontSize == 24);
             result.Values.ShouldContain(f => f.FontName == "NotoSansCJK" && f.FontSize == 24);
+        }
+        finally
+        {
+            GumRuntime.ElementSaveExtensions.ClearRegistrations();
+        }
+    }
+
+    [Fact]
+    public void CollectRequiredFonts_ShouldCollectBothCustomTtfBranches_WhenCustomFontFileSetViaConditionalVariableReference()
+    {
+        // UseCustomFont makes CustomFontFile the font's identity, so a ternary on it is as
+        // branch-worthy as one on Font. See the Font-branch test above for the Initialize/reset
+        // pattern.
+        Gum.Expressions.GumExpressionService.Initialize();
+        try
+        {
+            ComponentSave component = new ComponentSave { Name = "Panel", BaseType = "Container" };
+            StateSave state = AddState(component);
+            AddTextInstance(component, "Label");
+
+            SetVar(state, "IsLocaleZh", false);
+            SetVar(state, "Label.UseCustomFont", true);
+            state.Variables.Add(new VariableSave
+            {
+                SetsValue = true,
+                Name = "Label.CustomFontFile",
+                Value = "Latin.ttf",
+                Type = "string"
+            });
+
+            VariableListSave<string> variableReferences = new VariableListSave<string>
+            {
+                Name = "Label.VariableReferences",
+                Type = "string"
+            };
+            variableReferences.ValueAsIList.Add("CustomFontFile = IsLocaleZh ? \"Cjk.ttf\" : \"Latin.ttf\"");
+            state.VariableLists.Add(variableReferences);
+
+            Project.Components.Add(component);
+
+            Dictionary<string, BmfcSave> result = _sut.CollectRequiredFonts(Project, new[] { component });
+
+            result.Values.ShouldContain(f => f.FontFile == "Latin.ttf");
+            result.Values.ShouldContain(f => f.FontFile == "Cjk.ttf");
+            result.Values.ShouldNotContain(f => f.FontName == "Arial");
         }
         finally
         {

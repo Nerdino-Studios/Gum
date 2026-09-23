@@ -479,7 +479,7 @@ public partial class ElementTreeViewManager : IRecipient<ThemeChangedMessage>, I
     {
         if (ObjectFinder.Self.GetStandardElement(typeName) is { } standardElement)
         {
-            _addInstanceLogic.AddInstanceAtDestination(standardElement);
+            AddInstanceWithoutScrollingIntoView(() => _addInstanceLogic.AddInstanceAtDestination(standardElement));
         }
     }
 
@@ -492,7 +492,27 @@ public partial class ElementTreeViewManager : IRecipient<ThemeChangedMessage>, I
     {
         if (clickedNode.Tag is ElementSave elementToAdd)
         {
-            _addInstanceLogic.AddInstanceAtDestination(elementToAdd);
+            AddInstanceWithoutScrollingIntoView(() => _addInstanceLogic.AddInstanceAtDestination(elementToAdd));
+        }
+    }
+
+    /// <summary>
+    /// Runs an add-instance gesture that repeats rapidly (Ctrl-click a Standards chip, Ctrl+Shift-click
+    /// an element node) without scrolling the tree to the newly-selected instance, so users can keep
+    /// adding instances one after another without the view jumping (#4882). Drag, the right-click Add
+    /// menu, and the Add Instance dialog are excluded on purpose: each is a single deliberate
+    /// placement the user is already looking at, not a rapid-fire sequence the scroll interrupts.
+    /// </summary>
+    private void AddInstanceWithoutScrollingIntoView(Action addInstance)
+    {
+        SuppressNextEnsureVisible = true;
+        try
+        {
+            addInstance();
+        }
+        finally
+        {
+            SuppressNextEnsureVisible = false;
         }
     }
 
@@ -532,28 +552,36 @@ public partial class ElementTreeViewManager : IRecipient<ThemeChangedMessage>, I
             return null;
         }
 
-        // Issue #2864: a drop whose visual adornment is "rectangle around the
-        // row" (Into and IntoFirst both draw the same box) must append to the
-        // flat Instances list the new visual will be added to — never insert
-        // at a stale tree-child index. The user-facing distinction is
-        // "box vs. line": box = append, line = insert at sibling position.
-        // Inserting at index 0 is still reachable as DropKind.Before on the
-        // parent's first child, which draws a line.
+        // The adornment the user is aiming at decides where the drop lands in the flat
+        // Instances list the new visual is added to — never a stale tree-child index
+        // (issue #2864). Into draws a box around the row and appends to it. IntoFirst
+        // draws an insert line indented under the row (issue #4913), so it lands ahead of
+        // that row's existing children, matching the line the user sees — the same place a
+        // DropKind.Before on the first child row, whose line is drawn at the same spot,
+        // already lands (issue #4927).
         switch (kind)
         {
             case TreeDropKind.Into:
             case TreeDropKind.IntoFirst:
+            {
+                InstanceSave? firstChild = kind == TreeDropKind.IntoFirst
+                    ? FirstChildInstanceOf(originalTarget)
+                    : null;
+                DropPosition position = firstChild != null
+                    ? new DropPosition.BeforeSibling(firstChild)
+                    : new DropPosition.Append();
                 switch (originalTarget.Tag)
                 {
                     case ElementSave element:
-                        return (originalTarget, new DropTarget(element, null, new DropPosition.Append()));
+                        return (originalTarget, new DropTarget(element, null, position));
                     case InstanceSave instance when instance.ParentContainer != null:
-                        return (originalTarget, new DropTarget(instance.ParentContainer, instance, new DropPosition.Append()));
+                        return (originalTarget, new DropTarget(instance.ParentContainer, instance, position));
                     default:
                         // Folder/behavior drops: no flat-list semantics. The caller
                         // routes by treeNode kind (IsTopComponentContainerTreeNode etc.).
                         return (originalTarget, null);
                 }
+            }
             case TreeDropKind.After:
             case TreeDropKind.Before:
             {
@@ -579,6 +607,13 @@ public partial class ElementTreeViewManager : IRecipient<ThemeChangedMessage>, I
         }
     }
 
+    /// <summary>
+    /// The instance the first of <paramref name="target"/>'s child rows shows, or null when it has
+    /// no child rows or they are not instances (folder and behavior rows). Child rows are in flat
+    /// Instances order, so inserting before this one makes the dropped instance the new first child.
+    /// </summary>
+    private static InstanceSave? FirstChildInstanceOf(GumTreeNode target) =>
+        target.Nodes.FirstOrDefault(node => node.Tag is InstanceSave)?.Tag as InstanceSave;
 
     private void CollapseAll()
     {
@@ -1296,7 +1331,7 @@ public partial class ElementTreeViewManager : IRecipient<ThemeChangedMessage>, I
 
             if (treeNode != null)
             {
-                View.EnsureVisible(treeNode);
+                EnsureVisibleUnlessSuppressed(treeNode);
             }
 
             if (!SuppressCallAfterClickSelect)
@@ -1357,12 +1392,27 @@ public partial class ElementTreeViewManager : IRecipient<ThemeChangedMessage>, I
 
         if (treeNodes.Count != 0)
         {
-            View.EnsureVisible(treeNodes[0]);
+            EnsureVisibleUnlessSuppressed(treeNodes[0]);
 
             if (!SuppressCallAfterClickSelect)
             {
                 Selection.CallAfterClickSelect(treeNodes[0]);
             }
+        }
+    }
+
+    /// <summary>
+    /// Scrolls <paramref name="treeNode"/> into view unless <see cref="SuppressNextEnsureVisible"/> is
+    /// set, which an add-instance gesture that repeats rapidly (Ctrl-click a Standards chip,
+    /// Ctrl+Shift-click an element node) uses so each add doesn't jerk the tree view's scroll
+    /// position (#4882).
+    /// </summary>
+    private void EnsureVisibleUnlessSuppressed(GumTreeNode treeNode)
+    {
+        if (!SuppressNextEnsureVisible)
+        {
+            View.EnsureVisible(treeNode);
+            EnsureVisibleCallCount++;
         }
     }
 
@@ -1783,6 +1833,20 @@ public partial class ElementTreeViewManager : IRecipient<ThemeChangedMessage>, I
     /// triggered plugin events (e.g. InstanceSelected → tree sync).
     /// </summary>
     internal bool SuppressCallAfterClickSelect;
+
+    /// <summary>
+    /// When true, Select skips scrolling the newly-selected node into view. Set around an
+    /// add-instance gesture that repeats rapidly (Ctrl-click a Standards chip, Ctrl+Shift-click an
+    /// element node) so each add doesn't jerk the tree view's scroll position (#4882).
+    /// </summary>
+    internal bool SuppressNextEnsureVisible;
+
+    /// <summary>
+    /// Counts real (non-suppressed) calls to <see cref="IElementTreeView.EnsureVisible"/>. Exposed
+    /// for tests to confirm whether a gesture scrolled the tree (#4882).
+    /// </summary>
+    internal int EnsureVisibleCallCount;
+
     internal void OnSelect(ITreeNode? selectedTreeNode)
     {
         GumTreeNode? treeNode = Selection.SelectedNode;

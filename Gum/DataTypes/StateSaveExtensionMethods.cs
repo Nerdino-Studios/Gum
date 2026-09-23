@@ -53,11 +53,16 @@ public static class StateSaveExtensionMethods
     /// </remarks>
     /// <param name="stateSave">The state in the current element.</param>
     /// <param name="variableName">The variable name</param>
+    /// <param name="ignoreOwnValue">
+    /// When true, skips <paramref name="stateSave"/>'s own directly-set value and starts the walk as if
+    /// it were absent - used by the "Make Default" preview (#4893) to find what a variable would resolve
+    /// to if this state stopped authoring it explicitly, even when it currently does.
+    /// </param>
     /// <returns>The value found recursively, where the most-derived value has priority.</returns>
-    public static object GetValueRecursive(this StateSave stateSave, string variableName)
+    public static object GetValueRecursive(this StateSave stateSave, string variableName, bool ignoreOwnValue = false)
     {
         // First we check if this state sets the value directly...
-        object value = stateSave.GetValue(variableName);
+        object value = ignoreOwnValue ? null : stateSave.GetValue(variableName);
 
         ElementSave elementContainingState = stateSave.ParentContainer;
         if (value == null && elementContainingState != null)
@@ -96,7 +101,17 @@ public static class StateSaveExtensionMethods
             // on a derived component's DefaultState short-circuits before reaching
             // GetVariableListRecursive and silently returns null — even though the
             // base component sets the list.
-            if (!wasFound && elementContainingState != null)
+            //
+            // foundVariable == null is a perf short-circuit (#4868): a variable name is
+            // either a scalar VariableSave or a VariableListSave, never both (they're
+            // stored in separate StateSave collections and correspond to a single
+            // reflected CLR property — see StandardElementsManager.AddVariableReferenceList,
+            // which always adds "VariableReferences" as a list, never a scalar). So once
+            // GetVariableRecursive already found a scalar definition for this exact name,
+            // a VariableListSave with the same name cannot exist, and the expensive
+            // GetVariableListRecursive walk (which loops every variable in the state
+            // calling IsState) can be skipped.
+            if (!wasFound && foundVariable == null && elementContainingState != null)
             {
                 var foundVariableList = stateSave.GetVariableListRecursive(variableName);
                 if (foundVariableList?.ValueAsIList != null)

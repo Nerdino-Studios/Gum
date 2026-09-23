@@ -71,6 +71,8 @@ public class HotkeyManager : IHotkeyManager
     public KeyCombination NavigateBack { get; private set; } = KeyCombination.Alt(GumKey.Left);
     public KeyCombination NavigateForward { get; private set; } = KeyCombination.Alt(GumKey.Right);
 
+    public KeyCombination ShowHotkeys { get; private set; } = KeyCombination.Ctrl(GumKey.OemQuestion);
+
     // If adding any new keys here, modify HotkeyViewModel
 
 
@@ -88,6 +90,7 @@ public class HotkeyManager : IHotkeyManager
     private readonly IPluginManager _pluginManager;
     private readonly ISelectionHistory _selectionHistory;
     private readonly IModifierKeyState _modifierKeyState;
+    private readonly INameVerifier _nameVerifier;
 
 
     public HotkeyManager(IGuiCommands guiCommands,
@@ -104,7 +107,8 @@ public class HotkeyManager : IHotkeyManager
         IPluginManager pluginManager,
         ISelectionHistory selectionHistory,
         IModifierKeyState modifierKeyState,
-        IOperatingSystemInfo operatingSystemInfo)
+        IOperatingSystemInfo operatingSystemInfo,
+        INameVerifier nameVerifier)
     {
         KeyCombination ctrlY = KeyCombination.Ctrl(GumKey.Y);
         KeyCombination ctrlShiftZ = new KeyCombination { IsCtrlDown = true, IsShiftDown = true, Key = GumKey.Z };
@@ -125,6 +129,7 @@ public class HotkeyManager : IHotkeyManager
         _pluginManager = pluginManager;
         _selectionHistory = selectionHistory;
         _modifierKeyState = modifierKeyState;
+        _nameVerifier = nameVerifier;
     }
 
     public bool IsPressedInControl(KeyCombination combo)
@@ -159,6 +164,7 @@ public class HotkeyManager : IHotkeyManager
             _ when Undo.IsPressed(e) => _undoManager.PerformUndo,
             _ when NavigateBack.IsPressed(e) => _selectionHistory.NavigateBack,
             _ when NavigateForward.IsPressed(e) => _selectionHistory.NavigateForward,
+            _ when ShowHotkeys.IsPressed(e) => _guiCommands.ShowHotkeys,
             _ when ZoomDirection() is { } dir && enableEntireAppZoom => () => _uiSettingsService.BaseFontSize += dir,
             _ => null
         };
@@ -209,7 +215,11 @@ public class HotkeyManager : IHotkeyManager
                 GetUserStringOptions options = new()
                 {
                     InitialValue = oldName,
-                    PreSelect = true
+                    PreSelect = true,
+                    Validator = v =>
+                        _nameVerifier.IsInstanceNameValid(v, selectedInstance, selectedInstance.ParentContainer, out string whyNotValid)
+                            ? null
+                            : whyNotValid
                 };
                 
                 if (_dialogService.GetUserString("Enter new name", "Rename Instance", options) is { } newName)

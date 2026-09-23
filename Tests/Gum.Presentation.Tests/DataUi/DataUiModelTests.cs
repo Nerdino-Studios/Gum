@@ -40,6 +40,17 @@ public class DataUiModelTests
         }
     }
 
+    private sealed class PreviewableMember : InstanceMember
+    {
+        public PreviewableMember(string name, object instance) : base(name, instance)
+        {
+        }
+
+        public object? PreviewValue { get; set; }
+
+        public override object? MakeDefaultPreviewValue => PreviewValue;
+    }
+
     private sealed class RecordingDataUi : IDataUi, ISetDefaultable
     {
         public InstanceMember? InstanceMember { get; set; }
@@ -107,12 +118,54 @@ public class DataUiModelTests
     }
 
     [Fact]
+    public void GetContextMenuEntries_AppendsPreviewValue_WhenMemberHasAMakeDefaultPreviewValue()
+    {
+        // #4893: the "Make Default" label should show what it would restore.
+        PreviewableMember member = new PreviewableMember("Width", new Target()) { PreviewValue = 12f };
+        RecordingDataUi dataUi = new RecordingDataUi { InstanceMember = member };
+
+        dataUi.GetContextMenuEntries().Single().Header.ShouldBe("Make Default (12)");
+    }
+
+    [Fact]
+    public void GetContextMenuEntries_OmitsPreviewValue_WhenPreviewValueIsAnEnumerable()
+    {
+        // A VariableList preview would ToString() into an unhelpful type name - suppress it.
+        PreviewableMember member = new PreviewableMember("VariableReferences", new Target())
+        {
+            PreviewValue = new List<string> { "Red = Some.Red" }
+        };
+        RecordingDataUi dataUi = new RecordingDataUi { InstanceMember = member };
+
+        dataUi.GetContextMenuEntries().Single().Header.ShouldBe("Make Default");
+    }
+
+    [Fact]
     public void GetContextMenuEntries_OmitsMakeDefault_WhenTheMemberDoesNotSupportIt()
     {
         InstanceMember member = new InstanceMember("Width", new Target()) { SupportsMakeDefault = false };
         RecordingDataUi dataUi = new RecordingDataUi { InstanceMember = member };
 
         dataUi.GetContextMenuEntries().ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void GetContextMenuEntries_DisablesMakeDefault_WhenMemberIsAlreadyDefault()
+    {
+        // #4895: clicking Make Default on an already-default row is a no-op; disable it instead.
+        DefaultableMember member = new DefaultableMember("Width", new Target()) { IsDefault = true };
+        RecordingDataUi dataUi = new RecordingDataUi { InstanceMember = member };
+
+        dataUi.GetContextMenuEntries().Single().IsEnabled.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void GetContextMenuEntries_EnablesMakeDefault_WhenMemberIsNotDefault()
+    {
+        DefaultableMember member = new DefaultableMember("Width", new Target()) { IsDefault = false };
+        RecordingDataUi dataUi = new RecordingDataUi { InstanceMember = member };
+
+        dataUi.GetContextMenuEntries().Single().IsEnabled.ShouldBeTrue();
     }
 
     [Fact]

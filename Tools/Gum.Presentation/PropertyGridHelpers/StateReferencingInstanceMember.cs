@@ -161,6 +161,8 @@ public class StateReferencingInstanceMember : InstanceMember
 
     public override IList<object> CustomOptions => _entry.CustomOptions ?? base.CustomOptions;
 
+    public override object? MakeDefaultPreviewValue => _entry.GetMakeDefaultPreviewValue();
+
     /// <summary>
     /// Translates <see cref="VariableGridEntry.PreferredDisplayerKind"/>/<see cref="VariableGridEntry.PreferredDisplayerOverride"/>
     /// to the displayer the grid shows. An explicit override (a displayer key or a head control) is
@@ -351,9 +353,6 @@ public class StateReferencingInstanceMember : InstanceMember
     private void HandleSetToDefault(string obj) => _entry.ResetToDefault();
 
     #endregion
-
-    public GeneralResponse NotifyVariableLogic(object gumElementOrInstanceSaveAsObject, SetPropertyCommitType commitType, bool trySave = true) =>
-        _entry.NotifyVariableLogic(gumElementOrInstanceSaveAsObject, MapCommitType(commitType), trySave);
 
     private Type? HandleCustomGetType(object instance) => _entry.GetValueType(instance);
 

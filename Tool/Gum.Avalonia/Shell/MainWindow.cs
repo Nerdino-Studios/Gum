@@ -24,8 +24,9 @@ using Gum.Dialogs;
 namespace Gum.Avalonia.Shell;
 
 /// <summary>
-/// The tool's main window: menu on top (in the macOS menu bar), the five-region panel in the middle, a status bar at the
-/// bottom. Routes window-wide key presses into the hotkey manager and restores/persists placement.
+/// The tool's main window: menu on top (in the macOS menu bar), the five-region panel filling the rest, with a progress
+/// badge overlaid in the bottom-right corner. Routes window-wide key presses into the hotkey manager and
+/// restores/persists placement.
 /// </summary>
 public sealed class MainWindow : Window, IRecipient<CloseMainWindowMessage>
 {
@@ -47,9 +48,6 @@ public sealed class MainWindow : Window, IRecipient<CloseMainWindowMessage>
     private const double ResizeBorderThickness = 8;
 
     private bool _drawsInTitleBar;
-
-    private static readonly IValueConverter FileNameOnly =
-        new FuncValueConverter<string?, string?>(title => string.IsNullOrEmpty(title) ? title : System.IO.Path.GetFileNameWithoutExtension(title));
 
     /// <summary>Builds the window; nothing here touches the project until the startup sequence runs.</summary>
     public MainWindow(
@@ -103,23 +101,31 @@ public sealed class MainWindow : Window, IRecipient<CloseMainWindowMessage>
         Control titleRow = CreateTitleRow(menu);
         DockPanel.SetDock(titleRow, Dock.Top);
 
-        _statusText = new TextBlock { Margin = new Thickness(8, 2), VerticalAlignment = VerticalAlignment.Center };
+        _statusText = new TextBlock { Margin = new Thickness(10, 4), VerticalAlignment = VerticalAlignment.Center };
         _statusText.Bind(TextBlock.TextProperty, new AvaloniaBinding(nameof(ShellViewModel.ProgressText)));
-        Border statusBar = new Border
+        Border statusOverlay = new Border
         {
             Child = _statusText,
-            Height = 24,
-            BorderThickness = new Thickness(0, 1, 0, 0),
-        }.WithThemeResource(Border.BorderBrushProperty, "Frb.Brushes.Border");
-        // The bar carries only the spinner's progress, so it takes no height while there is none.
-        statusBar.Bind(IsVisibleProperty, new AvaloniaBinding(nameof(ShellViewModel.ProgressText)) { Converter = StringConverters.IsNotNullOrEmpty });
-        DockPanel.SetDock(statusBar, Dock.Bottom);
+            CornerRadius = new CornerRadius(4),
+            BorderThickness = new Thickness(1),
+            Margin = new Thickness(0, 0, 12, 12),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            IsHitTestVisible = false,
+        }.WithThemeResource(Border.BackgroundProperty, "Frb.Brushes.Background")
+         .WithThemeResource(Border.BorderBrushProperty, "Frb.Brushes.Border");
+        // Overlaid on top of the panel rather than docked, so showing/hiding it never resizes or
+        // shifts the rest of the layout.
+        statusOverlay.Bind(IsVisibleProperty, new AvaloniaBinding(nameof(ShellViewModel.ProgressText)) { Converter = StringConverters.IsNotNullOrEmpty });
 
         MainPanelView panel = new MainPanelView(tabs);
-        DockPanel root = new DockPanel();
-        root.Children.Add(titleRow);
-        root.Children.Add(statusBar);
-        root.Children.Add(panel);
+        DockPanel content = new DockPanel();
+        content.Children.Add(titleRow);
+        content.Children.Add(panel);
+
+        Panel root = new Panel();
+        root.Children.Add(content);
+        root.Children.Add(statusOverlay);
         Content = root;
         ApplyResizeBorderMargin(panel);
 
@@ -190,10 +196,10 @@ public sealed class MainWindow : Window, IRecipient<CloseMainWindowMessage>
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = global::Avalonia.Media.TextTrimming.CharacterEllipsis,
         };
-        fileName.Bind(TextBlock.TextProperty, new AvaloniaBinding(nameof(ShellViewModel.Title)) { Converter = FileNameOnly });
-        fileName.Bind(ToolTip.TipProperty, new AvaloniaBinding(nameof(ShellViewModel.Title)));
+        fileName.Bind(TextBlock.TextProperty, new AvaloniaBinding(nameof(ShellViewModel.Title)));
+        fileName.Bind(ToolTip.TipProperty, new AvaloniaBinding(nameof(ShellViewModel.ProjectFilePath)));
         fileName.ContextMenu = AvaloniaContextMenus.CreateRebuildingMenu(
-            () => ProjectTitleContextMenuBuilder.Build(_shell.Title, _fileSystemRevealService, _clipboardService));
+            () => ProjectTitleContextMenuBuilder.Build(_shell.ProjectFilePath, _fileSystemRevealService, _clipboardService));
         Grid.SetColumn(fileName, 2);
 
         Grid row = new Grid

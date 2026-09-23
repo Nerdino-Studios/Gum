@@ -31,7 +31,7 @@ namespace Gum.Bundle;
 /// Known limitation: a conditional (ternary) <c>VariableReferences</c> row on the element
 /// itself or a direct instance has every branch pregenerated (see #4042), but a conditional
 /// reference reached only through a nested component instance's inner Text instances
-/// (<see cref="CollectFontsFromNestedTextInstances"/>) still resolves a single value via
+/// (<c>CollectFontsFromNestedTextInstances</c>) still resolves a single value via
 /// <see cref="RecursiveVariableFinder"/> - only the currently-active branch is collected there.
 /// </para>
 /// </remarks>
@@ -41,9 +41,18 @@ public class FontReferenceCollector
     /// Font-affecting properties whose <c>VariableReferences</c> row is branch-enumerated
     /// (all ternary branches collected, not just the one active now). See #4042.
     /// </summary>
+    /// <remarks>
+    /// This is every input to <see cref="BmfcSave.GetFontCacheFileNameFor"/>, which is what makes
+    /// two Texts need two baked atlases - <c>UseCustomFont</c> included, since it decides whether
+    /// <c>Font</c> or <c>CustomFontFile</c> is the identity. A property that reaches
+    /// <see cref="BuildBmfcSave"/> but not the cache name (the dropshadow offset and color, applied
+    /// at draw time) deliberately stays out: its branches all bake the same file. Anything added to
+    /// the cache name belongs here too, or only its currently-active branch gets pregenerated (#4936).
+    /// </remarks>
     private static readonly string[] FontAffectingVariableNames =
     {
-        "Font", "FontSize", "OutlineThickness", "UseFontSmoothing", "IsItalic", "IsBold"
+        "Font", "FontSize", "OutlineThickness", "UseFontSmoothing", "IsItalic", "IsBold",
+        "UseCustomFont", "CustomFontFile", "HasDropshadow", "DropshadowBlur"
     };
 
     private readonly Func<InstanceSave, ElementSave?> _resolveInstanceElement;
@@ -246,8 +255,39 @@ public class FontReferenceCollector
     private static BmfcSave? BuildBmfcSave(Func<string, object?> getValue,
         string fontRanges, int spacingHorizontal, int spacingVertical)
     {
-        int? fontSize = getValue("FontSize") as int?;
+        // Font and FontSize gate the result, so read them first and stop on a miss. Every
+        // non-Text instance misses on Font, and each recursive lookup walks the state, base
+        // and instance chains, so the style lookups below only run for real text (#4865).
         string? fontValue = getValue("Font") as string;
+        if (fontValue == null)
+        {
+            return null;
+        }
+
+        int? fontSize = getValue("FontSize") as int?;
+        if (fontSize == null)
+        {
+            return null;
+        }
+
+        // UseCustomFont makes CustomFontFile the font's identity and leaves Font and the style
+        // variables inert - the variables tab hides them rather than clearing them, so they keep
+        // whatever system font was last picked. A .ttf/.otf custom file still needs baking (the same
+        // ResolveTtfSourcePath decision every backend's font-loading path makes), but a pre-baked
+        // .fnt is loaded straight off disk and needs nothing generated for it. See #4922.
+        if (getValue("UseCustomFont") as bool? == true)
+        {
+            string? customFontFile = BmfcSave.ResolveTtfSourcePath(
+                useCustomFont: true, getValue("CustomFontFile") as string, fontValue);
+
+            if (customFontFile == null)
+            {
+                return null;
+            }
+
+            fontValue = customFontFile;
+        }
+
         int outlineValue = getValue("OutlineThickness") as int? ?? 0;
 
         // default to true to match how old behavior worked
@@ -255,10 +295,12 @@ public class FontReferenceCollector
         bool isItalic = getValue("IsItalic") as bool? ?? false;
         bool isBold = getValue("IsBold") as bool? ?? false;
 
-        if (fontValue == null || fontSize == null)
-        {
-            return null;
-        }
+        // The shadow is baked into the atlas as a blurred silhouette variant, so a dropshadow Text
+        // needs a different file than the same font without one - BmfcSave.FontCacheFileName gives it
+        // a "_ds{blur}" suffix. Offset and color are applied at draw time and don't change the bake,
+        // but they're carried along so the BmfcSave stays a full description of the font - read only
+        // when the shadow is on, so a plain Text doesn't pay seven more recursive lookups (#4929).
+        bool hasDropshadow = getValue("HasDropshadow") as bool? ?? false;
 
         BmfcSave bmfcSave = new BmfcSave();
         bmfcSave.FontSize = fontSize.Value;
@@ -269,6 +311,18 @@ public class FontReferenceCollector
         bmfcSave.Ranges = fontRanges;
         bmfcSave.SpacingHorizontal = spacingHorizontal;
         bmfcSave.SpacingVertical = spacingVertical;
+        bmfcSave.HasDropshadow = hasDropshadow;
+
+        if (hasDropshadow)
+        {
+            bmfcSave.DropshadowOffsetX = getValue("DropshadowOffsetX") as float? ?? 0f;
+            bmfcSave.DropshadowOffsetY = getValue("DropshadowOffsetY") as float? ?? 0f;
+            bmfcSave.DropshadowBlur = getValue("DropshadowBlur") as float? ?? 0f;
+            bmfcSave.DropshadowRed = (byte)(getValue("DropshadowRed") as int? ?? 0);
+            bmfcSave.DropshadowGreen = (byte)(getValue("DropshadowGreen") as int? ?? 0);
+            bmfcSave.DropshadowBlue = (byte)(getValue("DropshadowBlue") as int? ?? 0);
+            bmfcSave.DropshadowAlpha = (byte)(getValue("DropshadowAlpha") as int? ?? 0);
+        }
 
         if (BmfcSave.IsFontFilePath(fontValue))
         {
@@ -365,39 +419,6 @@ public class FontReferenceCollector
     {
         RecursiveVariableFinder rfv = new RecursiveVariableFinder(elementStack);
 
-        string? fontValue = rfv.GetValueByBottomName("Font") as string;
-        int? fontSize = rfv.GetValueByBottomName("FontSize") as int?;
-
-        if (fontValue == null || fontSize == null)
-        {
-            return null;
-        }
-
-        int outlineValue = rfv.GetValueByBottomName("OutlineThickness") as int? ?? 0;
-        bool fontSmoothing = rfv.GetValueByBottomName("UseFontSmoothing") as bool? ?? true;
-        bool isItalic = rfv.GetValueByBottomName("IsItalic") as bool? ?? false;
-        bool isBold = rfv.GetValueByBottomName("IsBold") as bool? ?? false;
-
-        BmfcSave bmfcSave = new BmfcSave();
-        bmfcSave.FontSize = fontSize.Value;
-        bmfcSave.OutlineThickness = outlineValue;
-        bmfcSave.UseSmoothing = fontSmoothing;
-        bmfcSave.IsItalic = isItalic;
-        bmfcSave.IsBold = isBold;
-        bmfcSave.Ranges = fontRanges;
-        bmfcSave.SpacingHorizontal = spacingHorizontal;
-        bmfcSave.SpacingVertical = spacingVertical;
-
-        if (BmfcSave.IsFontFilePath(fontValue))
-        {
-            bmfcSave.FontFile = fontValue;
-            bmfcSave.FontName = Path.GetFileNameWithoutExtension(fontValue);
-        }
-        else
-        {
-            bmfcSave.FontName = fontValue;
-        }
-
-        return bmfcSave;
+        return BuildBmfcSave(name => rfv.GetValueByBottomName(name), fontRanges, spacingHorizontal, spacingVertical);
     }
 }

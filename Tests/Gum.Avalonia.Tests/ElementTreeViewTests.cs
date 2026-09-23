@@ -204,8 +204,116 @@ public class ElementTreeViewTests
         window.Close();
     }
 
-    private static TreeRowView RowFor(AvaloniaGumTreeView tree, GumTreeNode node) =>
-        tree.GetVisualDescendants().OfType<TreeRowView>().Single(view => view.Row?.Node == node);
+    /// <summary>
+    /// #4882 follow-up: inserting a row above the current scroll position (e.g. adding an instance
+    /// to a container scrolled out of view above) used to leave the scroll offset untouched, so
+    /// every already-visible row silently shifted down by one - eventually pushing whatever the user
+    /// was clicking off screen. The row insertion must shift the scroll offset by the same amount so
+    /// the already-visible rows stay exactly where they were.
+    /// </summary>
+    [AvaloniaFact]
+    public void InsertingARowAboveTheViewport_KeepsAlreadyVisibleRowsAtTheSameScreenPosition()
+    {
+        AvaloniaGumTreeView tree = new AvaloniaGumTreeView();
+        tree.Selection.IsSelectingOnPush = false;
+
+        GumTreeNode root = new GumTreeNode("Root");
+        List<GumTreeNode> children = new List<GumTreeNode>();
+        for (int i = 0; i < 20; i++)
+        {
+            GumTreeNode child = new GumTreeNode($"Child{i}");
+            children.Add(child);
+            root.Nodes.Add(child);
+        }
+        tree.Nodes.Add(root);
+        root.IsExpanded = true;
+
+        // Short enough that only a handful of the 20 children fit at once.
+        Window window = new Window { Width = 300, Height = 120, Content = tree };
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+        window.UpdateLayout();
+
+        ScrollViewer scrollViewer = window.GetVisualDescendants().OfType<ScrollViewer>().Single();
+        double rowHeight = RowFor(tree, children[0]).Bounds.Height;
+
+        // Scroll so Child10 sits at the very top of the viewport, with Child0-9 (and Root) above it,
+        // scrolled out of view.
+        scrollViewer.Offset = new Vector(0, rowHeight * 10);
+        Dispatcher.UIThread.RunJobs();
+        window.UpdateLayout();
+
+        double anchorYBefore = RowFor(tree, children[10]).TranslatePoint(new Point(0, 0), window)!.Value.Y;
+
+        // Simulates adding an instance to a container that's scrolled above the viewport: a new
+        // sibling row lands before every currently-visible row.
+        GumTreeNode inserted = new GumTreeNode("Inserted");
+        root.Nodes.Insert(0, inserted);
+        Dispatcher.UIThread.RunJobs();
+        window.UpdateLayout();
+
+        double anchorYAfter = RowFor(tree, children[10]).TranslatePoint(new Point(0, 0), window)!.Value.Y;
+
+        anchorYAfter.ShouldBe(anchorYBefore);
+        scrollViewer.Offset.Y.ShouldBe(rowHeight * 11);
+        window.Close();
+    }
+
+    /// <summary>
+    /// #4906: dragging near the top/bottom edge auto-scrolls the tree (<c>AutoScrollWhileDragging</c>)
+    /// and, in the same pointer-move tick, asks which row is now under the pointer - before the
+    /// virtualizing panel's next layout pass has realized rows at their new positions. Hit-testing the
+    /// realized visuals at that moment sees stale containers, so the drop target (and with it the drag
+    /// cursor and the drop indicator) flickered between found and not-found every tick. <c>NodeAt</c>
+    /// must answer correctly from the scroll offset alone, without waiting for a layout pass.
+    /// </summary>
+    [AvaloniaFact]
+    public void NodeAt_ImmediatelyAfterScrollOffsetChanges_FindsTheRowAtTheNewOffset_WithoutALayoutPass()
+    {
+        AvaloniaGumTreeView tree = new AvaloniaGumTreeView();
+        tree.Selection.IsSelectingOnPush = false;
+
+        GumTreeNode root = new GumTreeNode("Root");
+        List<GumTreeNode> children = new List<GumTreeNode>();
+        for (int i = 0; i < 20; i++)
+        {
+            GumTreeNode child = new GumTreeNode($"Child{i}");
+            children.Add(child);
+            root.Nodes.Add(child);
+        }
+        tree.Nodes.Add(root);
+        root.IsExpanded = true;
+
+        // Short enough that only a handful of the 20 children are realized at once.
+        Window window = new Window { Width = 300, Height = 120, Content = tree };
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+        window.UpdateLayout();
+
+        double rowHeight = RowFor(tree, children[0]).Bounds.Height;
+
+        // Scroll ten rows down - deliberately not following this with RunJobs()/UpdateLayout(), the
+        // same as HandleDragOver calling GetDropAt right after AutoScrollWhileDragging moves the
+        // offset within one DragOver tick. Root is row 0, so Child9 (row 10) lands at the top.
+        ScrollViewer scrollViewer = window.GetVisualDescendants().OfType<ScrollViewer>().Single();
+        scrollViewer.Offset = new Vector(0, rowHeight * 10);
+
+        GumTreeNode? found = tree.NodeAt(new Point(10, rowHeight / 2));
+
+        found.ShouldBe(children[9]);
+        window.Close();
+    }
+
+    private static TreeRowView RowFor(AvaloniaGumTreeView tree, GumTreeNode node)
+    {
+        List<TreeRowView> rows = tree.GetVisualDescendants().OfType<TreeRowView>().ToList();
+        List<TreeRowView> matches = rows.Where(view => view.Row?.Node == node).ToList();
+        // A missing row is a CI-only flake (#4858); say which stage went wrong rather than just "no match".
+        matches.Count.ShouldBe(1,
+            $"Row for {node.Text}: {matches.Count} matches, {rows.Count} rows realized, " +
+            $"{tree.VisibleNodes.Count} visible nodes, IsMeasureValid {tree.IsMeasureValid}, bounds {tree.Bounds}");
+        return matches[0];
+    }
 
     private static (Window Window, AvaloniaGumTreeView Tree, GumTreeNode Screens, GumTreeNode First, GumTreeNode Second) CreateTree()
     {
@@ -221,13 +329,16 @@ public class ElementTreeViewTests
 
         Window window = new Window { Width = 300, Height = 400, Content = tree };
         window.Show();
+        // The rows are built on a posted dispatcher job and realized on the layout pass after it;
+        // run the layout synchronously too so a row lookup never depends on a render job having run.
         Dispatcher.UIThread.RunJobs();
+        window.UpdateLayout();
         return (window, tree, screens, first, second);
     }
 
     private static void Click(Window window, AvaloniaGumTreeView tree, GumTreeNode node, RawInputModifiers modifiers)
     {
-        TreeRowView row = tree.GetVisualDescendants().OfType<TreeRowView>().Single(view => view.Row?.Node == node);
+        TreeRowView row = RowFor(tree, node);
         Point point = row.TranslatePoint(new Point(row.Bounds.Width / 2, row.Bounds.Height / 2), window)!.Value;
 
         window.MouseDown(point, MouseButton.Left, modifiers);
